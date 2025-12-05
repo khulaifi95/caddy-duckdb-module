@@ -68,6 +68,12 @@ type DuckDB struct {
 	// If empty, uses system default.
 	TempDirectory string `json:"temp_directory,omitempty"`
 
+	// InitFilePath is the path to a .duckdbrc initialization file containing SQL commands
+	// to execute after the database connection is established.
+	// Similar to `duckdb -init .duckdbrc`, this allows you to set configurations,
+	// load extensions, or run startup SQL commands.
+	InitFilePath string `json:"init_file_path,omitempty"`
+
 	logger         *zap.Logger
 	dbMgr          *database.Manager
 	authorizer     *auth.Authorizer
@@ -134,6 +140,7 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 		MemoryLimit:       d.MemoryLimit,
 		EnableObjectCache: d.EnableObjectCache,
 		TempDirectory:     d.TempDirectory,
+		InitFilePath:      d.InitFilePath,
 		QueryTimeout:      time.Duration(d.QueryTimeout),
 		Logger:            d.logger,
 	})
@@ -162,6 +169,7 @@ func (d *DuckDB) Provision(ctx caddy.Context) error {
 		zap.String("memory_limit", d.MemoryLimit),
 		zap.Bool("enable_object_cache", d.EnableObjectCache),
 		zap.String("temp_directory", d.TempDirectory),
+		zap.String("init_file_path", d.InitFilePath),
 	)
 
 	return nil
@@ -330,6 +338,10 @@ func (d *DuckDB) UnmarshalCaddyfile(dispenser *caddyfile.Dispenser) error {
 				d.EnableObjectCache = enableStr == "true" || enableStr == "yes" || enableStr == "1"
 			case "temp_directory":
 				if !dispenser.Args(&d.TempDirectory) {
+					return dispenser.ArgErr()
+				}
+			case "init_file_path":
+				if !dispenser.Args(&d.InitFilePath) {
 					return dispenser.ArgErr()
 				}
 			default:

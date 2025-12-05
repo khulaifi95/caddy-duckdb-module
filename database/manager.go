@@ -1,9 +1,12 @@
 package database
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +23,7 @@ type Config struct {
 	MemoryLimit       string
 	EnableObjectCache bool
 	TempDirectory     string
+	InitFilePath      string
 	QueryTimeout      time.Duration
 	Logger            *zap.Logger
 }
@@ -129,6 +133,13 @@ func NewManager(cfg Config) (*Manager, error) {
 	// Pre-warm connections to eliminate cold-start latency
 	mgr.warmConnections()
 
+	// Load initialization file if provided
+	if err := mgr.loadInitFile(cfg.InitFilePath); err != nil {
+		mgr.mainDB.Close()
+		mgr.authDB.Close()
+		return nil, fmt.Errorf("failed to load init file: %w", err)
+	}
+
 	return mgr, nil
 }
 
@@ -215,6 +226,13 @@ func NewManagerForTesting(cfg Config) (*Manager, error) {
 		mgr.mainDB.Close()
 		mgr.authDB.Close()
 		return nil, fmt.Errorf("failed to initialize auth schema: %w", err)
+	}
+
+	// Load initialization file if provided
+	if err := mgr.loadInitFile(cfg.InitFilePath); err != nil {
+		mgr.mainDB.Close()
+		mgr.authDB.Close()
+		return nil, fmt.Errorf("failed to load init file: %w", err)
 	}
 
 	return mgr, nil
@@ -541,4 +559,91 @@ func (m *Manager) InvalidateTableSchema(table string) {
 	m.logger.Debug("Invalidated table schema cache",
 		zap.String("table", table),
 	)
+}
+
+// loadInitFile reads and executes SQL commands from an initialization file.
+// This mimics the behavior of `duckdb -init .duckdbrc`.
+// The file can contain SQL statements, comments (-- or /**/), and blank lines.
+func (m *Manager) loadInitFile(filePath string) error {
+	if filePath == "" {
+		return nil
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open init file '%s': %w", filePath, err)
+	}
+	defer file.Close()
+
+	m.logger.Info("Loading initialization file", zap.String("path", filePath))
+
+	// Read the entire file and parse SQL statements
+	scanner := bufio.NewScanner(file)
+	var currentStmt strings.Builder
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Text()
+		trimmedLine := strings.TrimSpace(line)
+
+		// Skip empty lines and single-line comments
+		if trimmedLine == "" || strings.HasPrefix(trimmedLine, "--") {
+			continue
+		}
+
+		// Append line to current statement
+		currentStmt.WriteString(line)
+		currentStmt.WriteString("\n")
+
+		// Check if statement is complete (ends with semicolon)
+		if strings.HasSuffix(trimmedLine, ";") {
+			stmt := strings.TrimSpace(currentStmt.String())
+			if stmt != "" && stmt != ";" {
+				// Execute the statement
+				ctx, cancel := context.WithTimeout(context.Background(), m.queryTimeout)
+				_, err := m.mainDB.ExecContext(ctx, stmt)
+				cancel()
+
+				if err != nil {
+					m.logger.Error("Failed to execute init file statement",
+						zap.String("file", filePath),
+						zap.Int("line", lineNum),
+						zap.String("statement", stmt),
+						zap.Error(err),
+					)
+					return fmt.Errorf("failed to execute statement at line %d in '%s': %w", lineNum, filePath, err)
+				}
+
+				m.logger.Debug("Executed init file statement",
+					zap.Int("line", lineNum),
+					zap.String("statement", stmt),
+				)
+			}
+			// Reset for next statement
+			currentStmt.Reset()
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading init file '%s': %w", filePath, err)
+	}
+
+	// Check if there's an incomplete statement
+	if currentStmt.Len() > 0 {
+		stmt := strings.TrimSpace(currentStmt.String())
+		if stmt != "" {
+			m.logger.Warn("Incomplete statement in init file (missing semicolon)",
+				zap.String("file", filePath),
+				zap.String("statement", stmt),
+			)
+		}
+	}
+
+	m.logger.Info("Initialization file loaded successfully",
+		zap.String("path", filePath),
+		zap.Int("lines", lineNum),
+	)
+
+	return nil
 }
