@@ -38,6 +38,7 @@ Thumbs.db
 # Database files
 *.db
 *.duckdb
+.duckdbrc
 
 # Build artifacts (root-level binaries only)
 /caddy
