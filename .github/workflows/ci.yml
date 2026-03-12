@@ -26,7 +26,7 @@ on:
       - main
 
 env:
-  GO_VERSION: '1.24'
+  GO_VERSION: '1.25'
   DOCKERHUB_IMAGE: tobilg/caddy-duckdb
 
 jobs:
